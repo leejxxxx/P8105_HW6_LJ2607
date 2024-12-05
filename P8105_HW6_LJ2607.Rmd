@@ -1,0 +1,44 @@
+---
+title: "P8105_HW6_LJ2607"
+author: "Li Jiang"
+date: "2024-12-04"
+output: github_document
+---
+
+```{r}
+#Load required packages
+library(readr)
+library(tidyverse)
+library(dplyr)
+library(purrr)
+library(modelr)
+library(broom)
+```
+```
+
+*Question2
+```{r}
+#Importing dataset
+homicide_data <- read_csv("data/homicide-data.csv")
+View(homicide_data)
+```
+
+```{r}
+#clean dataset and prepare for analysis
+homicide_data_clean <- homicide_data %>%
+  mutate(city_state = paste(city,",",state))%>%
+  filter(city_state != "Dallas, TX",
+         city_state != "Phoenix, AZ",
+         city_state != "Kansas City, MO",
+         city_state != "Tulsa, AL",
+         victim_race %in% c("White", "Black")) %>%
+  mutate(victim_age = as.numeric(victim_age),
+         homicide_status = ifelse(disposition == "Closed by arrest", 1, 0))
+```
+
+```{r}
+#lOgistic regression for city of baltimore
+baltimore_data <- homicide_data_clean %>%
+  filter(city_state =="Baltimore,MD")
+```
+
