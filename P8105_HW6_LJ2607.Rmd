@@ -13,7 +13,7 @@ library(dplyr)
 library(purrr)
 library(modelr)
 library(broom)
-```
+library(ggplot2)
 ```
 
 *Question2
@@ -26,19 +26,169 @@ View(homicide_data)
 ```{r}
 #clean dataset and prepare for analysis
 homicide_data_clean <- homicide_data %>%
-  mutate(city_state = paste(city,",",state))%>%
-  filter(city_state != "Dallas, TX",
-         city_state != "Phoenix, AZ",
-         city_state != "Kansas City, MO",
-         city_state != "Tulsa, AL",
-         victim_race %in% c("White", "Black")) %>%
-  mutate(victim_age = as.numeric(victim_age),
-         homicide_status = ifelse(disposition == "Closed by arrest", 1, 0))
+  mutate(
+    city_state = paste(city, ",", state),
+    victim_age = as.numeric(victim_age),
+    homicide_status = ifelse(disposition == "Closed by arrest", 1, 0))%>%
+  filter(
+    victim_race %in% c("White", "Black"), 
+    !city_state %in% c("Dallas,TX", "Phoenix,AZ", "Kansas City,MO", "Tulsa,AL"))%>%
+  mutate(
+    victim_sex = factor(victim_sex),
+    victim_race = factor(victim_race))
 ```
 
 ```{r}
 #lOgistic regression for city of baltimore
 baltimore_data <- homicide_data_clean %>%
-  filter(city_state =="Baltimore,MD")
+  filter(city_state =="Baltimore , MD")
+
+baltimore_model <- glm(
+  homicide_status ~ victim_age + victim_sex + victim_race,
+  data = baltimore_data,
+  family = binomial)
+  
+baltimore_model %>% 
+  broom::tidy() %>% 
+  mutate(OR = exp(estimate),  
+         conf.low = exp(estimate - 1.96 * std.error), 
+         conf.high = exp(estimate + 1.96 * std.error)) %>%  
+  filter(term == "victim_sexMale") %>%  
+  select(term, OR, conf.low, conf.high) %>%
+  knitr::kable()
 ```
 
+```{r}
+#Remove problematic city_state (Tulsa,AL)
+problematic_cities <- homicide_data_clean %>%
+  group_by(city_state) %>%
+  summarise(
+    victim_sex_levels = n_distinct(victim_sex),
+    victim_race_levels = n_distinct(victim_race),
+    homicide_status_levels = n_distinct(homicide_status)
+  ) %>%
+  filter(
+    victim_sex_levels < 2 | 
+    victim_race_levels < 2 | 
+    homicide_status_levels < 2
+  )
+
+homicide_data_clean <- homicide_data_clean %>%
+  filter(!city_state %in% problematic_cities$city_state)
+
+homicide_data_clean <- homicide_data_clean %>%
+  mutate(
+    victim_sex = factor(victim_sex),
+    victim_race = factor(victim_race),
+    homicide_status = factor(homicide_status)
+  )
+```
+
+
+```{r}
+#logistic regression for all cities
+city_models <- homicide_data_clean %>%
+  group_by(city_state) %>%
+  nest() %>%
+  mutate(
+    model = map(data, ~ glm(homicide_status ~ victim_age + victim_sex + victim_race, data = ., family = binomial)),
+    results = map(model, ~ broom::tidy(.x) %>%
+      mutate(
+        OR = exp(estimate),
+        conf.low = exp(estimate - 1.96 * std.error),
+        conf.high = exp(estimate + 1.96 * std.error)
+      ) %>%
+      filter(term == "victim_sexMale") %>%
+      select(term, OR, conf.low, conf.high))
+  ) %>%
+  unnest(results) %>%
+  select(city_state, OR, conf.low, conf.high)
+```
+
+
+```{r}
+# Plot the results
+city_models %>%
+  mutate(city_state = fct_reorder(city_state, OR)) %>%  
+  ggplot(aes(x = city_state, y = OR)) +
+  geom_point(color = "blue", size = 3) +                
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.2) + 
+  coord_flip() +                                      
+  labs(
+    title = "Odds Ratios for Solving Homicides (Male vs. Female)",
+    x = "City, State",
+    y = "Odds Ratio"
+  ) +
+  theme_minimal()
+```
+*Comments:The plot displays the odds ratios and confidence intervals for each city, categorized by male and female homicide cases. It reveals that cases involving male victims are generally less likely to be solved compared to those involving female victims. Notably, the top three cities—Albuquerque, NM; Stockton, CA; and Fresno, CA—exhibit the highest odds ratios for male versus female victims compared to other cities.
+
+
+*Question3
+```{r}
+#Load datasets
+birthweight <- read_csv("data/birthweight.csv")%>%
+  drop_na()
+```
+
+```{r}
+#Fit my own model
+birthweight_model <- lm(bwt ~ babysex + bhead + blength + delwt + gaweeks + smoken, data = birthweight)
+summary(birthweight_model)
+
+birthweight <- birthweight %>%
+  add_predictions(birthweight_model) %>%
+  add_residuals(birthweight_model)
+
+ggplot(birthweight, aes(x = pred, y = resid)) +
+  geom_point() +
+  geom_hline(yintercept = 0) +
+  labs(
+    title = "Residuals vs Fitted Values",
+    x = "Fitted Values",
+    y = "Residuals"
+  ) +
+  theme_minimal()
+```
+*Modeling process:I aimed to predict birthweight using key predictors like babysex, bhead, blength, delwt, gaweeks, and smoken. After dropping missing value, I proposed a linear model as interested. The plot of model residues against fitted values indicate that the residues are almost evenly distributed around fitted value.
+
+```{r}
+#Build two other models
+model_simple <- lm(bwt ~ blength + gaweeks, data = birthweight)
+model_interaction <- lm(bwt ~ bhead * blength * babysex, data = birthweight)
+```
+
+```{r}
+#Compare my model with other two models
+comparision <- crossv_mc(birthweight, 100) %>%
+  mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble)
+  ) %>%
+  mutate(
+    model1 = map(train, ~ lm(bwt ~ blength + gaweeks, data = .x)),
+    model2 = map(train, ~ lm(bwt ~ bhead * blength * babysex, data = .x)),
+    my_model = map(train, ~ lm(lm(bwt ~ babysex + bhead + blength + delwt + gaweeks + smoken, data = .x)))) %>%
+  mutate(
+    rmse_model1 = map2_dbl(model1, test, ~ rmse(model = .x, data = .y)),
+    rmse_model2 = map2_dbl(model2, test, ~ rmse(model = .x, data = .y)),
+    rmse_my_model = map2_dbl(my_model, test, ~ rmse(model = .x, data = .y))
+  )
+```
+
+```{r}
+# Compare RMSE for each model
+comparision %>%
+  select(starts_with("rmse")) %>%
+  pivot_longer(everything(), names_to = "model", values_to = "rmse", names_prefix = "rmse_") %>%
+  ggplot(aes(x = model, y = rmse)) +
+  geom_violin() +
+  labs(
+    title = "Comparison of RMSE Across Models",
+    x = "Model",
+    y = "RMSE"
+  ) +
+  theme_minimal()
+```
+
+*Conclusion:After comparing RMSE distributions across three models. Model 1 shows the highest RMSE and widest distribution of RMSE, indicating the lowest predictive accuracy. Model 2 achieves lower RMSE with a narrower distribution, reflecting betterperformance. My model has relatively lower RMSE to Model 2 but with narrower distribution, suggesting higher performance than model 1 and model 2.
